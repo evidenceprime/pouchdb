@@ -100,30 +100,49 @@ function replicate(src, target, opts, promise) {
   var results = [];
   var completed = false;
   var pendingRevs = 0;
-  var last_seq = 0;
   var continuous = opts.continuous || false;
   var doc_ids = opts.doc_ids;
   var result = {
     ok: true,
     start_time: new Date(),
     docs_read: 0,
-    docs_written: 0
+    docs_written: 0,
+    doc_write_failures: 0
   };
 
   function docsWritten(err, res, len) {
-    if (opts.onChange) {
-      for (var i = 0; i < len; i++) {
-        /*jshint validthis:true */
-        opts.onChange.apply(this, [result]);
-      }
-    }
     pendingRevs -= len;
-    result.docs_written += len;
 
-    writeCheckpoint(src, target, repId, last_seq, function(err, res) {
-      requests.notifyRequestComplete();
-      isCompleted();
-    });
+    var lastSeq = 0;
+    var error = false;
+    if (err) {
+      error = true;
+      result.doc_write_failures += len;
+    } else {
+      res.forEach(function(doc) {
+        if (doc.error) {
+          result.doc_write_failures++;
+          error = true;
+        } else {
+          result.docs_written++;
+          console.log(doc);
+          // lastSeq = doc.
+        }
+
+        if (opts.onChange) {
+          /*jshint validthis:true */
+          opts.onChange.apply(this, [result]);
+        }
+      });
+    }
+
+    // don't write checkpoint if there was an error
+    if (!error) {
+      writeCheckpoint(src, target, repId, lastSeq, function(err, res) {
+        requests.notifyRequestComplete();
+        isCompleted();
+      });
+    }
   }
 
   function writeDocs() {
@@ -183,7 +202,6 @@ function replicate(src, target, opts, promise) {
   }
 
   function onChange(change) {
-    last_seq = change.seq;
     results.push(change);
     var diff = {};
     diff[change.id] = change.changes.map(function(x) { return x.rev; });
@@ -211,8 +229,6 @@ function replicate(src, target, opts, promise) {
       return PouchUtils.call(opts.complete, err);
     }
 
-    last_seq = checkpoint;
-
     // Was the replication cancelled by the caller before it had a chance
     // to start. Shouldnt we be calling complete?
     if (promise.cancelled) {
@@ -221,7 +237,7 @@ function replicate(src, target, opts, promise) {
 
     var repOpts = {
       continuous: continuous,
-      since: last_seq,
+      since: checkpoint,
       style: 'all_docs',
       onChange: onChange,
       complete: complete,
